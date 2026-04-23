@@ -1,0 +1,57 @@
+name: Wistia Analytics Pipeline
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Run ingestion
+        env:
+          WISTIA_API_TOKEN: ${{ secrets.WISTIA_API_TOKEN }}
+          S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
+          MEDIA_ID_1: gskhw4w4lm
+          MEDIA_ID_2: v08dlrgr7v
+        run: python ingestion/wistia_ingestor.py
+
+      - name: Trigger Glue transform job
+        run: |
+          aws glue start-job-run --job-name ${{ secrets.GLUE_JOB_NAME }}
+
+      - name: Wait for Glue job to complete
+        run: |
+          while true; do
+            STATUS=$(aws glue get-job-runs --job-name ${{ secrets.GLUE_JOB_NAME }} \
+              --query 'JobRuns[0].JobRunState' --output text)
+            echo "Glue job status: $STATUS"
+            if [ "$STATUS" = "SUCCEEDED" ]; then
+              echo "Glue job succeeded!"
+              break
+            elif [ "$STATUS" = "FAILED" ] || [ "$STATUS" = "ERROR" ]; then
+              echo "Glue job failed!"
+              exit 1
+            fi
+            sleep 30
+          done
