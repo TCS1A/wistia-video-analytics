@@ -4,6 +4,7 @@ import json
 import os
 import logging
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -49,7 +50,8 @@ def fetch_visitors(media_id):
         if len(data) < 100:
             break
         page += 1
-    return visitors
+    return visitorsclear
+
 
 def get_last_run_timestamp(media_id):
     key = f'state/{media_id}/last_run.json'
@@ -71,24 +73,35 @@ def upload_to_s3(data, prefix, media_id):
     s3.put_object(Bucket=S3_BUCKET, Key=key, Body=json.dumps(data, default=str))
     log.info(f'Uploaded -> s3://{S3_BUCKET}/{key}')
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+def process_media(media_id):
+    if not media_id:
+        log.warning('Skipping None media_id')
+        return
+    log.info(f'--- Processing media: {media_id} ---')
+    stats    = fetch_media_stats(media_id)
+    visitors = fetch_visitors(media_id)
+    upload_to_s3(stats,    'media',    media_id)
+    upload_to_s3(visitors, 'visitors', media_id)
+    save_run_timestamp(media_id)
+    log.info(f'[{media_id}] Done')
+
 def run():
     log.info('=== Wistia Ingestion Pipeline Starting ===')
     if not API_TOKEN:
         raise ValueError('WISTIA_API_TOKEN is not set in .env')
     if not S3_BUCKET:
         raise ValueError('S3_BUCKET_NAME is not set in .env')
-    for media_id in MEDIA_IDS:
-        if not media_id:
-            log.warning('Skipping None media_id — check .env')
-            continue
-        log.info(f'--- Processing media: {media_id} ---')
-        stats    = fetch_media_stats(media_id)
-        visitors = fetch_visitors(media_id)
-        upload_to_s3(stats,    'media',    media_id)
-        upload_to_s3(visitors, 'visitors', media_id)
-        save_run_timestamp(media_id)
-        log.info(f'[{media_id}] Done')
-    log.info('=== Ingestion Pipeline Complete ===')
 
-if __name__ == '__main__':
-    run()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {executor.submit(process_media, mid): mid for mid in MEDIA_IDS if mid}
+        for future in as_completed(futures):
+            mid = futures[future]
+            try:
+                future.result()
+            except Exception as e:
+                log.error(f'[{mid}] Failed: {e}')
+                raise
+
+    log.info('=== Ingestion Pipeline Complete ===')
