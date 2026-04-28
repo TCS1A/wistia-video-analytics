@@ -50,7 +50,7 @@ def fetch_visitors(media_id):
         if len(data) < 100:
             break
         page += 1
-    return visitorsclear
+    return visitors
 
 
 def get_last_run_timestamp(media_id):
